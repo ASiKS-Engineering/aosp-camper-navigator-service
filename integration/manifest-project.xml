@@ -1,0 +1,4 @@
+<project path="vendor/asiks/camper-navigator-service"
+        name="ASiKS-Engineering/aosp-camper-navigator-service"
+        remote="github"
+        revision="main" />
