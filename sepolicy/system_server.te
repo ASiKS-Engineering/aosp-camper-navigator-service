@@ -1,9 +1,3 @@
-#
-# ASiKS Camper Navigator Service
-#
-# Initial placeholder.
-#
-# Additional permissions will be added when the service is integrated into
-# Android 17 and its exact ActivityTaskManager / Settings access pattern is
-# known.
-#
+# Camper Navigator is a system_server service. Binder publication uses
+# system_server_service, so no vendor-specific binder type is required here.
+
