@@ -1,34 +1,13 @@
-
 package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
 filegroup {
-    name: "camper_navigator_service_aidl",
-    srcs: [
-        "aidl/com/asiks/camper/navigator/ICamperNavigatorManager.aidl",
-    ],
-    visibility: [
-        "//visibility:public",
-    ],
-}
-
-java_library {
-    name: "camper-navigator-service",
+    name: "camper_navigator_service_sources",
     srcs: [
         "service/java/**/*.java",
+        "aidl/com/asiks/camper/navigator/ICamperNavigatorManager.aidl",
     ],
-
-    aidl: {
-        local_include_dirs: [
-            "aidl",
-        ],
-    },
-
-    libs: [
-        "framework",
-    ],
-
     visibility: [
         "//visibility:public",
     ],
