@@ -1,9 +1,11 @@
 package com.asiks.camper.navigator;
 
 import android.app.ActivityOptions;
+import android.app.ActivityManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.os.Binder;
 import android.os.UserHandle;
 import android.provider.Settings;
@@ -11,81 +13,46 @@ import android.util.Slog;
 
 import com.android.server.SystemService;
 
+import java.util.List;
+
 /**
- * AOSP system-server service for the ASiKS Camper Navigator.
+ * System-server controller for the Camper Navigator foreground task.
  *
- * Boot behavior:
+ * HOME:
+ *   Launcher remains foreground. Navigator is kept alive if already running.
  *
- *   HOME:
- *       Launcher is allowed to remain the foreground application.
+ * FULLSCREEN:
+ *   Navigator is started/reused and moved to the foreground.
  *
- *   FULLSCREEN:
- *       After PHASE_BOOT_COMPLETED, the Navigator Activity is started/
- *       brought to the foreground.
- *
- * The Navigator is NOT a HOME application.
+ * The Navigator is intentionally not a HOME activity.
  */
 public final class CamperNavigatorService extends SystemService {
+    private static final String TAG = "CamperNavigatorService";
+    public static final String SERVICE_NAME = "camper_navigator";
 
-    private static final String TAG =
-            "CamperNavigatorService";
+    private static final String SETTING_MODE = "camper_navigator_mode";
 
-    /**
-     * Binder service name.
-     */
-    public static final String SERVICE_NAME =
-            "camper_navigator";
-
-    /**
-     * Persistent Settings.Secure key.
-     */
-    private static final String SETTING_MODE =
-            "camper_navigator_mode";
-
-    /**
-     * Navigator application package.
-     *
-     * IMPORTANT:
-     * Verify this against the final Navigator APK.
-     */
-    private static final String NAVIGATOR_PACKAGE =
-            "com.asiks.campernavigator";
-
-    /**
-     * Navigator main Activity.
-     */
+    private static final String NAVIGATOR_PACKAGE = "com.example.campernavigator";
     private static final String NAVIGATOR_ACTIVITY =
-            "com.asiks.campernavigator.MainActivity";
+            "com.example.campernavigator.MainActivity";
 
-    /**
-     * HOME mode.
-     */
-    public static final int MODE_HOME =
-            ICamperNavigatorManager.Stub.MODE_HOME;
+    private final Object mLock = new Object();
+    private int mCurrentUserId = UserHandle.USER_SYSTEM;
+    private int mMode = MODE_HOME;
 
-    /**
-     * FULLSCREEN mode.
-     */
+    private static final int MOVE_TASK_FLAGS =
+            ActivityManager.MOVE_TASK_WITH_HOME
+                    | ActivityManager.MOVE_TASK_NO_USER_ACTION;
+
+    public static final int MODE_HOME = ICamperNavigatorManager.Stub.MODE_HOME;
     public static final int MODE_FULLSCREEN =
             ICamperNavigatorManager.Stub.MODE_FULLSCREEN;
 
-    private final Object mLock = new Object();
-
-    private final Context mContext;
-
-    private int mCurrentUserId =
-            UserHandle.USER_SYSTEM;
-
-    private int mMode =
-            MODE_HOME;
-
     private final ICamperNavigatorManager.Stub mBinder =
             new ICamperNavigatorManager.Stub() {
-
                 @Override
                 public int getMode() {
                     enforceCaller();
-
                     synchronized (mLock) {
                         return mMode;
                     }
@@ -94,368 +61,198 @@ public final class CamperNavigatorService extends SystemService {
                 @Override
                 public void setMode(int mode) {
                     enforceCaller();
-
                     setModeInternal(mode);
                 }
 
                 @Override
                 public void showNavigator() {
                     enforceCaller();
-
                     showNavigatorInternal();
                 }
 
                 @Override
                 public void hideNavigator() {
                     enforceCaller();
-
                     hideNavigatorInternal();
                 }
             };
 
     public CamperNavigatorService(Context context) {
         super(context);
-
-        mContext = context;
     }
-
-    // ------------------------------------------------------------------------
-    // SystemService lifecycle
-    // ------------------------------------------------------------------------
 
     @Override
     public void onStart() {
-        Slog.i(TAG, "Starting Camper Navigator service");
-
-        publishBinderService(
-                SERVICE_NAME,
-                mBinder);
+        Slog.i(TAG, "Starting Camper Navigator system service");
+        publishBinderService(SERVICE_NAME, mBinder);
     }
 
     @Override
     public void onBootPhase(int phase) {
+        if (phase != PHASE_BOOT_COMPLETED) {
+            return;
+        }
 
-        /*
-         * Important:
-         *
-         * PHASE_BOOT_COMPLETED is intentional here.
-         *
-         * We want Launcher/Home to have the opportunity to establish the
-         * normal HOME task first.
-         */
-        if (phase == PHASE_BOOT_COMPLETED) {
+        synchronized (mLock) {
+            mMode = readModeLocked(mCurrentUserId);
+        }
 
-            Slog.i(
-                    TAG,
-                    "Boot completed - restoring Navigator state");
+        Slog.i(TAG, "Boot complete: user=" + mCurrentUserId
+                + " mode=" + modeToString(mMode));
 
-            restoreForCurrentUser();
+        if (mMode == MODE_FULLSCREEN) {
+            showNavigatorInternal();
         }
     }
 
     @Override
-    public void onSwitchUser(int userHandle) {
+    public void onUserStarting(TargetUser user) {
+        if (!user.isFull()) {
+            return;
+        }
+        Slog.i(TAG, "User starting: " + user.getUserIdentifier());
+    }
 
-        synchronized (mLock) {
-
-            mCurrentUserId =
-                    userHandle;
-
-            mMode =
-                    readModeLocked(userHandle);
+    @Override
+    public void onUserSwitching(TargetUser from, TargetUser to) {
+        if (!to.isFull()) {
+            return;
         }
 
-        Slog.i(
-                TAG,
-                "User switched to "
-                        + userHandle
-                        + ", mode="
-                        + modeToString(mMode));
+        final int userId = to.getUserIdentifier();
+        synchronized (mLock) {
+            mCurrentUserId = userId;
+            mMode = readModeLocked(userId);
+        }
+
+        Slog.i(TAG, "User switching to " + userId
+                + " mode=" + modeToString(mMode));
 
         if (mMode == MODE_FULLSCREEN) {
-
             showNavigatorInternal();
-
         } else {
-
             hideNavigatorInternal();
         }
     }
 
     @Override
-    public void onStartUser(int userHandle) {
-
-        Slog.i(
-                TAG,
-                "User started: "
-                        + userHandle);
-    }
-
-    @Override
-    public void onStopUser(int userHandle) {
-
-        Slog.i(
-                TAG,
-                "User stopped: "
-                        + userHandle);
-    }
-
-    // ------------------------------------------------------------------------
-    // Boot restore
-    // ------------------------------------------------------------------------
-
-    private void restoreForCurrentUser() {
-
+    public void onUserStopped(TargetUser user) {
+        final int userId = user.getUserIdentifier();
         synchronized (mLock) {
-
-            mMode =
-                    readModeLocked(
-                            mCurrentUserId);
+            if (mCurrentUserId == userId && userId != UserHandle.USER_SYSTEM) {
+                mCurrentUserId = UserHandle.USER_SYSTEM;
+                mMode = MODE_HOME;
+            }
         }
-
-        Slog.i(
-                TAG,
-                "Restoring mode for user "
-                        + mCurrentUserId
-                        + ": "
-                        + modeToString(mMode));
-
-        if (mMode == MODE_FULLSCREEN) {
-
-            showNavigatorInternal();
-        }
-
-        /*
-         * MODE_HOME deliberately does nothing.
-         *
-         * Launcher/Home is already allowed to remain the foreground
-         * application.
-         */
     }
-
-    // ------------------------------------------------------------------------
-    // Mode handling
-    // ------------------------------------------------------------------------
 
     private void setModeInternal(int mode) {
-
-        if (mode != MODE_HOME
-                && mode != MODE_FULLSCREEN) {
-
-            throw new IllegalArgumentException(
-                    "Unknown Navigator mode: "
-                            + mode);
+        if (mode != MODE_HOME && mode != MODE_FULLSCREEN) {
+            throw new IllegalArgumentException("Unknown Navigator mode: " + mode);
         }
 
         final int userId;
-
         synchronized (mLock) {
-
             mMode = mode;
-
-            userId =
-                    mCurrentUserId;
-
-            writeModeLocked(
-                    userId,
-                    mode);
+            userId = mCurrentUserId;
+            writeModeLocked(userId, mode);
         }
 
-        Slog.i(
-                TAG,
-                "Mode changed for user "
-                        + userId
-                        + ": "
-                        + modeToString(mode));
-
         if (mode == MODE_FULLSCREEN) {
-
             showNavigatorInternal();
-
         } else {
-
             hideNavigatorInternal();
         }
     }
 
-    // ------------------------------------------------------------------------
-    // Persistent Settings
-    // ------------------------------------------------------------------------
-
     private int readModeLocked(int userId) {
-
         try {
-
-            final int value =
-                    Settings.Secure.getIntForUser(
-                            mContext.getContentResolver(),
-                            SETTING_MODE,
-                            MODE_HOME,
-                            userId);
-
-            if (value == MODE_FULLSCREEN) {
-                return MODE_FULLSCREEN;
-            }
-
+            return Settings.Secure.getIntForUser(
+                    getContext().getContentResolver(),
+                    SETTING_MODE,
+                    MODE_HOME,
+                    userId) == MODE_FULLSCREEN ? MODE_FULLSCREEN : MODE_HOME;
         } catch (RuntimeException e) {
-
-            Slog.w(
-                    TAG,
-                    "Unable to read Navigator mode "
-                            + "for user "
-                            + userId,
-                    e);
+            Slog.w(TAG, "Cannot read mode for user " + userId, e);
+            return MODE_HOME;
         }
-
-        return MODE_HOME;
     }
 
-    private void writeModeLocked(
-            int userId,
-            int mode) {
-
+    private void writeModeLocked(int userId, int mode) {
         try {
-
             Settings.Secure.putIntForUser(
-                    mContext.getContentResolver(),
+                    getContext().getContentResolver(),
                     SETTING_MODE,
                     mode,
                     userId);
-
         } catch (RuntimeException e) {
-
-            Slog.e(
-                    TAG,
-                    "Unable to persist Navigator mode "
-                            + "for user "
-                            + userId,
-                    e);
+            Slog.e(TAG, "Cannot persist mode for user " + userId, e);
         }
     }
-
-    // ------------------------------------------------------------------------
-    // Navigator Activity
-    // ------------------------------------------------------------------------
 
     private void showNavigatorInternal() {
-
-        final long token =
-                Binder.clearCallingIdentity();
-
+        final int userId = getCurrentUserId();
+        final long token = Binder.clearCallingIdentity();
         try {
+            final Intent intent = new Intent();
+            intent.setComponent(new ComponentName(
+                    NAVIGATOR_PACKAGE, NAVIGATOR_ACTIVITY));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    | Intent.FLAG_ACTIVITY_CLEAR_TOP);
 
-            final Intent intent =
-                    new Intent();
+            final ActivityOptions options = ActivityOptions.makeBasic();
+            getContext().startActivityAsUser(
+                    intent, options.toBundle(), UserHandle.of(userId));
 
-            intent.setComponent(
-                    new ComponentName(
-                            NAVIGATOR_PACKAGE,
-                            NAVIGATOR_ACTIVITY));
-
-            intent.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                            | Intent.FLAG_ACTIVITY_SINGLE_TOP
-                            | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-
-            final ActivityOptions options =
-                    ActivityOptions.makeBasic();
-
-            Slog.i(
-                    TAG,
-                    "Starting Navigator for user "
-                            + getCurrentUserId());
-
-            /*
-             * This is the deliberately simple first implementation.
-             *
-             * During Android 17 integration we should replace this with the
-             * ActivityTaskManager internal path that can explicitly reuse
-             * and move the existing Navigator task to the foreground.
-             */
-            mContext.startActivityAsUser(
-                    intent,
-                    options.toBundle(),
-                    UserHandle.of(
-                            getCurrentUserId()));
-
+            // If the activity was already in a task, the launch flags above plus
+            // singleTask in the app manifest reuse it. The framework start path
+            // is used here instead of calling hidden ATMS internals from a
+            // vendor module.
+            Slog.i(TAG, "Navigator foreground requested for user " + userId);
         } catch (RuntimeException e) {
-
-            Slog.e(
-                    TAG,
-                    "Unable to start Navigator",
-                    e);
-
+            Slog.e(TAG, "Unable to foreground Navigator", e);
         } finally {
-
-            Binder.restoreCallingIdentity(
-                    token);
+            Binder.restoreCallingIdentity(token);
         }
     }
 
-    /**
-     * HOME mode does not destroy the Navigator task.
-     *
-     * This is important:
-     *
-     *   HOME != Navigator stopped
-     *
-     * The Navigator should retain its task so it can be restored quickly.
-     *
-     * The Android 17 integration will add the explicit task-to-front logic
-     * required to move Launcher/Home to the foreground.
-     */
     private void hideNavigatorInternal() {
-
-        Slog.i(
-                TAG,
-                "Navigator switched to HOME mode; "
-                        + "Launcher should remain foreground");
+        // Do not finish Navigator: HOME means Launcher is foreground while the
+        // Navigator task remains available for the next FULLSCREEN transition.
+        // The HOME task is explicitly started so that the transition is
+        // deterministic even when HOME mode is changed from Navigator itself.
+        final int userId = getCurrentUserId();
+        final long token = Binder.clearCallingIdentity();
+        try {
+            final Intent home = new Intent(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            getContext().startActivityAsUser(
+                    home, ActivityOptions.makeBasic().toBundle(),
+                    UserHandle.of(userId));
+            Slog.i(TAG, "HOME foreground requested for user " + userId);
+        } catch (RuntimeException e) {
+            Slog.e(TAG, "Unable to foreground HOME", e);
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
     }
 
-    // ------------------------------------------------------------------------
-    // Helpers
-    // ------------------------------------------------------------------------
-
     private int getCurrentUserId() {
-
         synchronized (mLock) {
-
             return mCurrentUserId;
         }
     }
 
-    /**
-     * Initial development implementation.
-     *
-     * IMPORTANT:
-     *
-     * Before exposing the Binder service to arbitrary applications, replace
-     * this with a signature-level permission check.
-     *
-     * The Navigator application should receive that permission in its
-     * AndroidManifest.xml.
-     */
     private void enforceCaller() {
-
-        /*
-         * Intentionally empty in the initial repository.
-         *
-         * Security integration belongs in the Android 17 AOSP integration.
-         */
+        getContext().enforceCallingPermission(
+                "android.permission.WRITE_SECURE_SETTINGS",
+                "Camper Navigator service requires WRITE_SECURE_SETTINGS");
     }
 
     private static String modeToString(int mode) {
-
-        switch (mode) {
-
-            case MODE_HOME:
-                return "HOME";
-
-            case MODE_FULLSCREEN:
-                return "FULLSCREEN";
-
-            default:
-                return "UNKNOWN(" + mode + ")";
-        }
+        return mode == MODE_FULLSCREEN ? "FULLSCREEN" : "HOME";
     }
 }
