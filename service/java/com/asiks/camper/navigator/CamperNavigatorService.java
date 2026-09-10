@@ -235,6 +235,12 @@ public final class CamperNavigatorService extends SystemService {
         final int userId;
         final int previousMode;
         synchronized (mLock) {
+            if (!applyScreenTransition && mode == MODE_HOME && mMode == MODE_FULLSCREEN) {
+                Slog.i(TAG, "Ignoring passive HOME update while FULLSCREEN is active: source="
+                        + source + " user=" + mCurrentUserId);
+                return;
+            }
+
             previousMode = mMode;
             mMode = mode;
             userId = mCurrentUserId;
