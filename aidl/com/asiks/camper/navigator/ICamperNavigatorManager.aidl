@@ -6,6 +6,4 @@ interface ICamperNavigatorManager {
 
     int getMode();
     void setMode(int mode);
-    void showNavigator();
-    void hideNavigator();
 }

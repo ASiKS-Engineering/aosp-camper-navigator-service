@@ -22,15 +22,19 @@ import java.io.IOException;
 import java.util.Properties;
 
 /**
- * System-server controller for the Camper Navigator foreground task.
+ * System-server controller for the Camper Navigator UI mode.
+ *
+ * The Navigator Activity is always hosted by CarLauncher's TaskView.
  *
  * HOME:
- *   Launcher remains foreground. Navigator is kept alive if already running.
+ *   Navigator remains embedded in the TaskView.
+ *   CarLauncher shows the audio card.
  *
  * FULLSCREEN:
- *   Navigator is started/reused and moved to the foreground.
+ *   Navigator remains embedded in the TaskView.
+ *   CarLauncher hides the audio card.
  *
- * The Navigator is intentionally not a HOME activity.
+ * No Activity/task switching is performed by this service.
  */
 public final class CamperNavigatorService extends SystemService {
     private static final String TAG = "CamperNavigatorService";
@@ -38,7 +42,10 @@ public final class CamperNavigatorService extends SystemService {
 
     private static final String SETTING_MODE = "camper_navigator_mode";
     private static final String LUM_FILE_NAME = "camper_navigator_lum.properties";
-
+	private static final String ACTION_NAVIGATION_UI_MODE_CHANGED =
+			"com.example.campernavigator.action.NAVIGATION_UI_MODE_CHANGED";
+	private static final String EXTRA_NAVIGATION_UI_MODE =
+			"com.example.campernavigator.extra.NAVIGATION_UI_MODE";
     public static final String ACTION_SET_MODE =
             "com.asiks.camper.navigator.action.SET_MODE";
     public static final String EXTRA_MODE =
@@ -150,24 +157,25 @@ public final class CamperNavigatorService extends SystemService {
             null);
     }
 
-    @Override
-    public void onBootPhase(int phase) {
-        if (phase != PHASE_BOOT_COMPLETED) {
-            return;
-        }
+	@Override
+	public void onBootPhase(int phase) {
+		if (phase != PHASE_BOOT_COMPLETED) {
+			return;
+		}
 
-        synchronized (mLock) {
-            mMode = readModeLocked(mCurrentUserId);
-        }
+		synchronized (mLock) {
+			mMode = readModeLocked(mCurrentUserId);
+		}
 
-        Slog.i(TAG, "Boot complete: user=" + mCurrentUserId
-                + " mode=" + modeToString(mMode));
+		Slog.i(
+				TAG,
+				"Boot complete: user=" + mCurrentUserId
+						+ " mode=" + modeToString(mMode));
 
-        prewarmNavigatorProcess("boot_completed");
+		prewarmNavigatorProcess("boot_completed");
 
-        publishNavigationUiMode(mode);
-		
-    }
+		publishNavigationUiMode(mMode);
+	}
 
     @Override
     public void onUserStarting(TargetUser user) {
@@ -211,53 +219,58 @@ public final class CamperNavigatorService extends SystemService {
     }
 
 	private void publishNavigationUiMode(int mode) {
-		final String modeValue = modeToString(mode);
-
 		Intent intent = new Intent(
-				"com.example.campernavigator.action.NAVIGATION_UI_MODE_CHANGED");
+				ACTION_NAVIGATION_UI_MODE_CHANGED);
 
 		intent.putExtra(
-				"com.example.campernavigator.extra.NAVIGATION_UI_MODE",
-				modeValue);
+				EXTRA_NAVIGATION_UI_MODE,
+				modeToString(mode));
 
-		intent.setPackage("com.example.campernavigator");
+		intent.setPackage(NAVIGATOR_PACKAGE);
 
 		getContext().sendBroadcastAsUser(
 				intent,
 				UserHandle.of(getCurrentUserId()));
 	}
 
-    private void setModeInternal(int mode, boolean applyScreenTransition, String source) {
-        if (mode != MODE_HOME && mode != MODE_FULLSCREEN) {
-            throw new IllegalArgumentException("Unknown Navigator mode: " + mode);
-        }
+	private void setModeInternal(
+			int mode,
+			boolean applyScreenTransition,
+			String source) {
 
-        final int userId;
-        final int previousMode;
-        synchronized (mLock) {
-            if (!applyScreenTransition && mode == MODE_HOME && mMode == MODE_FULLSCREEN) {
-                Slog.i(TAG, "Ignoring passive HOME update while FULLSCREEN is active: source="
-                        + source + " user=" + mCurrentUserId);
-                return;
-            }
+		if (mode != MODE_HOME && mode != MODE_FULLSCREEN) {
+			throw new IllegalArgumentException(
+					"Unknown Navigator mode: " + mode);
+		}
 
-            previousMode = mMode;
-            mMode = mode;
-            userId = mCurrentUserId;
-            writeModeLocked(userId, mode);
-            writeLumLocked(userId, mode);
-        }
+		final int userId;
+		final int previousMode;
 
-        Slog.i(TAG, "Navigator mode updated by " + source + ": user=" + userId
-                + " " + modeToString(previousMode) + " -> " + modeToString(mode)
-                + ", applyScreenTransition=" + applyScreenTransition);
+		synchronized (mLock) {
+			previousMode = mMode;
 
-        if (!applyScreenTransition) {
-            return;
-        }
+			if (previousMode == mode) {
+				return;
+			}
 
-        publishNavigationUiMode(mode);
-    }
+			mMode = mode;
+			userId = mCurrentUserId;
+
+			writeModeLocked(userId, mode);
+			writeLumLocked(userId, mode);
+		}
+
+		Slog.i(
+				TAG,
+				"Navigator mode updated by " + source
+						+ ": user=" + userId
+						+ " " + modeToString(previousMode)
+						+ " -> " + modeToString(mode)
+						+ ", applyScreenTransition="
+						+ applyScreenTransition);
+
+		publishNavigationUiMode(mMode);
+	}
 
     private int readModeLocked(int userId) {
         int lumMode = readLumModeLocked(userId);
