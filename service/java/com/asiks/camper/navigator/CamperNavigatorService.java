@@ -7,19 +7,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Binder;
-import android.os.Environment;
 import android.os.UserHandle;
 import android.provider.Settings;
-import android.util.AtomicFile;
 import android.util.Slog;
-
 import com.android.server.SystemService;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.util.Properties;
 
 /**
  * System-server controller for the Camper Navigator UI mode.
@@ -41,7 +33,6 @@ public final class CamperNavigatorService extends SystemService {
     public static final String SERVICE_NAME = "camper_navigator";
 
     private static final String SETTING_MODE = "camper_navigator_mode";
-    private static final String LUM_FILE_NAME = "camper_navigator_lum.properties";
 	private static final String ACTION_NAVIGATION_UI_MODE_CHANGED =
 			"com.example.campernavigator.action.NAVIGATION_UI_MODE_CHANGED";
 	private static final String EXTRA_NAVIGATION_UI_MODE =
@@ -68,9 +59,6 @@ public final class CamperNavigatorService extends SystemService {
         private static final String NAVIGATOR_WARMUP_SERVICE =
             "com.example.campernavigator.NavigatorWarmupService";
 
-    private final AtomicFile mLumFile = new AtomicFile(
-            new File(Environment.getDataSystemDirectory(), LUM_FILE_NAME));
-
     private final Object mLock = new Object();
     private int mCurrentUserId = UserHandle.USER_SYSTEM;
     private int mMode = MODE_HOME;
@@ -92,21 +80,6 @@ public final class CamperNavigatorService extends SystemService {
             boolean applyScreenTransition = intent.getBooleanExtra(
                     EXTRA_APPLY_SCREEN_TRANSITION, false);
             setModeInternal(mode, applyScreenTransition, "broadcast");
-        }
-    };
-
-    private final BroadcastReceiver mShutdownReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (intent == null || !Intent.ACTION_SHUTDOWN.equals(intent.getAction())) {
-                return;
-            }
-
-            synchronized (mLock) {
-                writeLumLocked(mCurrentUserId, mMode);
-            }
-            Slog.i(TAG, "Persisted LUM on shutdown: user=" + mCurrentUserId
-                    + " mode=" + modeToString(mMode));
         }
     };
 
@@ -147,14 +120,6 @@ public final class CamperNavigatorService extends SystemService {
             modeFilter,
             null,
             null);
-
-        IntentFilter shutdownFilter = new IntentFilter(Intent.ACTION_SHUTDOWN);
-        getContext().registerReceiverAsUser(
-            mShutdownReceiver,
-            UserHandle.ALL,
-            shutdownFilter,
-            null,
-            null);
     }
 
 	@Override
@@ -164,7 +129,7 @@ public final class CamperNavigatorService extends SystemService {
 		}
 
 		synchronized (mLock) {
-			mMode = readModeLocked(mCurrentUserId);
+			mMode = MODE_HOME;
 		}
 
 		Slog.i(
@@ -195,8 +160,7 @@ public final class CamperNavigatorService extends SystemService {
         final int userId = to.getUserIdentifier();
         synchronized (mLock) {
             mCurrentUserId = userId;
-            mMode = readModeLocked(userId);
-            writeLumLocked(userId, mMode);
+            mMode = MODE_HOME;
         }
 
         Slog.i(TAG, "User switching to " + userId
@@ -219,17 +183,24 @@ public final class CamperNavigatorService extends SystemService {
     }
 
 	private void publishNavigationUiMode(int mode) {
-		Intent intent = new Intent(
-				ACTION_NAVIGATION_UI_MODE_CHANGED);
-
+		Intent intent = new Intent(ACTION_NAVIGATION_UI_MODE_CHANGED);
 		intent.putExtra(
 				EXTRA_NAVIGATION_UI_MODE,
 				modeToString(mode));
 
-		intent.setPackage(NAVIGATOR_PACKAGE);
-
+		intent.setPackage("com.android.car.carlauncher");
 		getContext().sendBroadcastAsUser(
 				intent,
+				UserHandle.of(getCurrentUserId()));
+
+		Intent navigatorIntent = new Intent(ACTION_NAVIGATION_UI_MODE_CHANGED);
+		navigatorIntent.putExtra(
+				EXTRA_NAVIGATION_UI_MODE,
+				modeToString(mode));
+
+		navigatorIntent.setPackage(NAVIGATOR_PACKAGE);
+		getContext().sendBroadcastAsUser(
+				navigatorIntent,
 				UserHandle.of(getCurrentUserId()));
 	}
 
@@ -257,7 +228,6 @@ public final class CamperNavigatorService extends SystemService {
 			userId = mCurrentUserId;
 
 			writeModeLocked(userId, mode);
-			writeLumLocked(userId, mode);
 		}
 
 		Slog.i(
@@ -272,24 +242,6 @@ public final class CamperNavigatorService extends SystemService {
 		publishNavigationUiMode(mMode);
 	}
 
-    private int readModeLocked(int userId) {
-        int lumMode = readLumModeLocked(userId);
-        if (lumMode != -1) {
-            return lumMode;
-        }
-
-        try {
-            return Settings.Secure.getIntForUser(
-                    getContext().getContentResolver(),
-                    SETTING_MODE,
-                    MODE_HOME,
-                    userId) == MODE_FULLSCREEN ? MODE_FULLSCREEN : MODE_HOME;
-        } catch (RuntimeException e) {
-            Slog.w(TAG, "Cannot read mode for user " + userId, e);
-            return MODE_HOME;
-        }
-    }
-
     private void writeModeLocked(int userId, int mode) {
         try {
             Settings.Secure.putIntForUser(
@@ -299,50 +251,6 @@ public final class CamperNavigatorService extends SystemService {
                     userId);
         } catch (RuntimeException e) {
             Slog.e(TAG, "Cannot persist mode for user " + userId, e);
-        }
-    }
-
-    private int readLumModeLocked(int userId) {
-        Properties props = new Properties();
-
-        try (FileInputStream inputStream = mLumFile.openRead()) {
-            props.load(inputStream);
-        } catch (IOException e) {
-            return -1;
-        }
-
-        int storedUserId;
-        try {
-            storedUserId = Integer.parseInt(props.getProperty("userId", "-1"));
-        } catch (NumberFormatException e) {
-            Slog.w(TAG, "Invalid LUM userId, ignoring file", e);
-            return -1;
-        }
-
-        if (storedUserId != userId) {
-            return -1;
-        }
-
-        return parseMode(props.getProperty("mode"));
-    }
-
-    private void writeLumLocked(int userId, int mode) {
-        Properties props = new Properties();
-        props.setProperty("userId", Integer.toString(userId));
-        props.setProperty("mode", modeToString(mode));
-        props.setProperty("screen", screenToString(mode));
-        props.setProperty("updatedAtEpochMs", Long.toString(System.currentTimeMillis()));
-
-        FileOutputStream outputStream = null;
-        try {
-            outputStream = mLumFile.startWrite();
-            props.store(outputStream, "Camper Navigator LUM");
-            mLumFile.finishWrite(outputStream);
-        } catch (IOException e) {
-            Slog.e(TAG, "Cannot write LUM file", e);
-            if (outputStream != null) {
-                mLumFile.failWrite(outputStream);
-            }
         }
     }
 
