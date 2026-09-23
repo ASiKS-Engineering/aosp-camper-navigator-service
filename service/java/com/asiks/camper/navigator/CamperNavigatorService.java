@@ -204,7 +204,7 @@ public final class CamperNavigatorService extends SystemService {
 
         prewarmNavigatorProcess("user_switching");
 
-        publishNavigationUiMode(mode);
+        publishNavigationUiMode(mMode);
     }
 
     @Override
