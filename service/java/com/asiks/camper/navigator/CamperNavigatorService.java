@@ -183,25 +183,25 @@ public final class CamperNavigatorService extends SystemService {
     }
 
 	private void publishNavigationUiMode(int mode) {
-		Intent intent = new Intent(ACTION_NAVIGATION_UI_MODE_CHANGED);
-		intent.putExtra(
+		String modeValue = mode == MODE_FULLSCREEN
+				? MODE_VALUE_FULLSCREEN
+				: MODE_VALUE_HOME;
+
+		Intent launcherIntent = new Intent(
+				ACTION_NAVIGATION_UI_MODE_CHANGED);
+		launcherIntent.setPackage("com.android.car.carlauncher");
+		launcherIntent.putExtra(
 				EXTRA_NAVIGATION_UI_MODE,
-				modeToString(mode));
+				modeValue);
+		sendBroadcast(launcherIntent);
 
-		intent.setPackage("com.android.car.carlauncher");
-		getContext().sendBroadcastAsUser(
-				intent,
-				UserHandle.of(getCurrentUserId()));
-
-		Intent navigatorIntent = new Intent(ACTION_NAVIGATION_UI_MODE_CHANGED);
+		Intent navigatorIntent = new Intent(
+				ACTION_NAVIGATION_UI_MODE_CHANGED);
+		navigatorIntent.setPackage("com.example.campernavigator");
 		navigatorIntent.putExtra(
 				EXTRA_NAVIGATION_UI_MODE,
-				modeToString(mode));
-
-		navigatorIntent.setPackage(NAVIGATOR_PACKAGE);
-		getContext().sendBroadcastAsUser(
-				navigatorIntent,
-				UserHandle.of(getCurrentUserId()));
+				modeValue);
+		sendBroadcast(navigatorIntent);
 	}
 
 	private void setModeInternal(
