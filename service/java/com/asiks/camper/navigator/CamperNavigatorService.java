@@ -122,18 +122,6 @@ public final class CamperNavigatorService extends SystemService {
                     enforceCaller();
                     setModeInternal(mode, true, "binder");
                 }
-
-                @Override
-                public void showNavigator() {
-                    enforceCaller();
-                    showNavigatorInternal();
-                }
-
-                @Override
-                public void hideNavigator() {
-                    enforceCaller();
-                    hideNavigatorInternal();
-                }
             };
 
     public CamperNavigatorService(Context context) {
@@ -177,9 +165,8 @@ public final class CamperNavigatorService extends SystemService {
 
         prewarmNavigatorProcess("boot_completed");
 
-        if (mMode == MODE_FULLSCREEN) {
-            showNavigatorInternal();
-        }
+        publishNavigationUiMode(mode);
+		
     }
 
     @Override
@@ -209,11 +196,7 @@ public final class CamperNavigatorService extends SystemService {
 
         prewarmNavigatorProcess("user_switching");
 
-        if (mMode == MODE_FULLSCREEN) {
-            showNavigatorInternal();
-        } else {
-            hideNavigatorInternal();
-        }
+        publishNavigationUiMode(mode);
     }
 
     @Override
@@ -226,6 +209,23 @@ public final class CamperNavigatorService extends SystemService {
             }
         }
     }
+
+	private void publishNavigationUiMode(int mode) {
+		final String modeValue = modeToString(mode);
+
+		Intent intent = new Intent(
+				"com.example.campernavigator.action.NAVIGATION_UI_MODE_CHANGED");
+
+		intent.putExtra(
+				"com.example.campernavigator.extra.NAVIGATION_UI_MODE",
+				modeValue);
+
+		intent.setPackage("com.example.campernavigator");
+
+		getContext().sendBroadcastAsUser(
+				intent,
+				UserHandle.of(getCurrentUserId()));
+	}
 
     private void setModeInternal(int mode, boolean applyScreenTransition, String source) {
         if (mode != MODE_HOME && mode != MODE_FULLSCREEN) {
@@ -256,11 +256,7 @@ public final class CamperNavigatorService extends SystemService {
             return;
         }
 
-        if (mode == MODE_FULLSCREEN) {
-            showNavigatorInternal();
-        } else {
-            hideNavigatorInternal();
-        }
+        publishNavigationUiMode(mode);
     }
 
     private int readModeLocked(int userId) {
@@ -337,34 +333,6 @@ public final class CamperNavigatorService extends SystemService {
         }
     }
 
-    private void showNavigatorInternal() {
-        final int userId = getCurrentUserId();
-        final long token = Binder.clearCallingIdentity();
-        try {
-            final Intent intent = new Intent();
-            intent.setComponent(new ComponentName(
-                    NAVIGATOR_PACKAGE, NAVIGATOR_ACTIVITY));
-            intent.putExtra(NAVIGATION_UI_MODE_EXTRA, MODE_VALUE_FULLSCREEN);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                    | Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-
-            final ActivityOptions options = ActivityOptions.makeBasic();
-            getContext().startActivityAsUser(
-                    intent, options.toBundle(), UserHandle.of(userId));
-
-            // If the activity was already in a task, the launch flags above plus
-            // singleTask in the app manifest reuse it. The framework start path
-            // is used here instead of calling hidden ATMS internals from a
-            // vendor module.
-            Slog.i(TAG, "Navigator foreground requested for user " + userId);
-        } catch (RuntimeException e) {
-            Slog.e(TAG, "Unable to foreground Navigator", e);
-        } finally {
-            Binder.restoreCallingIdentity(token);
-        }
-    }
-
     private void prewarmNavigatorProcess(String reason) {
         final int userId = getCurrentUserId();
         final long token = Binder.clearCallingIdentity();
@@ -378,29 +346,6 @@ public final class CamperNavigatorService extends SystemService {
                     + " reason=" + reason);
         } catch (RuntimeException e) {
             Slog.e(TAG, "Unable to prewarm Navigator", e);
-        } finally {
-            Binder.restoreCallingIdentity(token);
-        }
-    }
-
-    private void hideNavigatorInternal() {
-        // Do not finish Navigator: HOME means Launcher is foreground while the
-        // Navigator task remains available for the next FULLSCREEN transition.
-        // The HOME task is explicitly started so that the transition is
-        // deterministic even when HOME mode is changed from Navigator itself.
-        final int userId = getCurrentUserId();
-        final long token = Binder.clearCallingIdentity();
-        try {
-            final Intent home = new Intent(Intent.ACTION_MAIN);
-            home.addCategory(Intent.CATEGORY_HOME);
-            home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                    | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-            getContext().startActivityAsUser(
-                    home, ActivityOptions.makeBasic().toBundle(),
-                    UserHandle.of(userId));
-            Slog.i(TAG, "HOME foreground requested for user " + userId);
-        } catch (RuntimeException e) {
-            Slog.e(TAG, "Unable to foreground HOME", e);
         } finally {
             Binder.restoreCallingIdentity(token);
         }
